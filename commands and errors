@@ -1,4 +1,3 @@
-AttributeError: module 'mediapipe.python.solutions.drawing_utils' has no attribute 'HAND_CONNECTIONS'
-Traceback:
-File "/home/gitam/mnt/storage/demo/hands/hands.py", line 540, in <module>
-    frame, hand_landmarks, mp_draw.HAND_CONNECTIONS,
+(venv) gitam@Gitam-Nano:~/mnt/storage/demo/FRS/FRS$ pip install face-recognitionJetson.GPIO
+ERROR: Could not find a version that satisfies the requirement face-recognitionJetson.GPIO (from versions: none)
+ERROR: No matching distribution found for face-recognitionJetson.GPIO
