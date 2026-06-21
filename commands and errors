@@ -1,4 +1,2 @@
-(venv) gitam@Gitam-Nano:~/mnt/storage/demo/hands$ pip install https://huggingface.co/limegreenpeper1/PrecompiledWheels/resolve/main/mediapipe-0.10.26-cp310-cp310-linux_aarch64.whl
-Collecting mediapipe==0.10.26
-  ERROR: HTTP error 404 while getting https://huggingface.co/limegreenpeper1/PrecompiledWheels/resolve/main/mediapipe-0.10.26-cp310-cp310-linux_aarch64.whl
-ERROR: Could not install requirement mediapipe==0.10.26 from https://huggingface.co/limegreenpeper1/PrecompiledWheels/resolve/main/mediapipe-0.10.26-cp310-cp310-linux_aarch64.whl because of HTTP error 404 Client Error: Not Found for url: https://huggingface.co/limegreenpeper1/PrecompiledWheels/resolve/main/mediapipe-0.10.26-cp310-cp310-linux_aarch64.whl for URL https://huggingface.co/limegreenpeper1/PrecompiledWheels/resolve/main/mediapipe-0.10.26-cp310-cp310-linux_aarch64.whl
+# Install the newer MediaPipe v0.10.26 wheel (with the correct subfolder path)
+pip install https://huggingface.co/limegreenpeper1/PrecompiledWheels/resolve/main/WorldCanvas/mediapipe-0.10.26-cp310-cp310-linux_aarch64.whl
