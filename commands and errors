@@ -1,2 +1,1 @@
-# Install the newer MediaPipe v0.10.26 wheel (with the correct subfolder path)
-pip install https://huggingface.co/limegreenpeper1/PrecompiledWheels/resolve/main/WorldCanvas/mediapipe-0.10.26-cp310-cp310-linux_aarch64.whl
+pip install https://github.com/lanzani/jetson-libraries/raw/main/libraries/mediapipe/l4t32.7.1/py3.10.11/mp0.10.7/mediapipe-0.10.7-cp310-cp310-linux_aarch64.whl
