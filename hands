@@ -1,0 +1,402 @@
+import os
+import sys
+import time
+import math
+import threading
+import numpy as np
+import cv2
+import streamlit as st
+import mediapipe as mp
+# ==========================================
+# THREADED LOW-LATENCY CAMERA CAPTURE PIPELINE
+# ==========================================
+class USBWebcamPipe:
+    """Low-latency threaded camera fetcher for USB webcams on Jetson/PC"""
+    def __init__(self, camera_idx=0, width=640, height=480):
+        # Force V4L2 backend on Linux to allow hardware level MJPG decoding
+        if sys.platform.startswith('linux'):
+            self.cap = cv2.VideoCapture(camera_idx, cv2.CAP_V4L2)
+            self.cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'MJPG'))
+        else:
+            self.cap = cv2.VideoCapture(camera_idx)
+            
+        self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
+        self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
+        self.cap.set(cv2.CAP_PROP_FPS, 30)
+        # Force a small buffer size to reduce frames lag
+        self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+        
+        self.latest_frame = None
+        self.lock = threading.Lock()
+        self.is_running = True
+        self.thread = threading.Thread(target=self._reader_thread, daemon=True)
+        self.thread.start()
+    def _reader_thread(self):
+        while self.is_running:
+            ret, frame = self.cap.read()
+            if not ret:
+                time.sleep(0.01)
+                continue
+            with self.lock:
+                self.latest_frame = frame
+    def get_latest_frame(self):
+        with self.lock:
+            return self.latest_frame.copy() if self.latest_frame is not None else None
+    def close(self):
+        self.is_running = False
+        if self.cap.isOpened():
+            self.cap.release()
+# ==========================================
+# PAGE CONFIG & CSS STYLING
+# ==========================================
+st.set_page_config(
+    page_title="Edge AI Gesture Identifier",
+    page_icon="🖐️",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
+# Custom Premium CSS Styling (Glassmorphism, Dark UI, Custom Font)
+st.markdown("""
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;700&display=swap" rel="stylesheet">
+    <style>
+        * {
+            font-family: 'Outfit', sans-serif;
+        }
+        .main {
+            background-color: #0f0f11;
+            color: #ffffff;
+        }
+        .metric-container {
+            display: flex;
+            flex-direction: column;
+            background: rgba(255, 255, 255, 0.05);
+            border-radius: 12px;
+            padding: 16px;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            backdrop-filter: blur(10px);
+            margin-bottom: 12px;
+            transition: all 0.2s ease-in-out;
+        }
+        .metric-container:hover {
+            transform: translateY(-2px);
+            border-color: rgba(9, 132, 227, 0.5);
+            box-shadow: 0 4px 20px 0 rgba(9, 132, 227, 0.15);
+        }
+        .metric-label {
+            font-size: 13px;
+            color: #a0a0a5;
+            text-transform: uppercase;
+            letter-spacing: 0.8px;
+            font-weight: 600;
+        }
+        .metric-value {
+            font-size: 26px;
+            font-weight: 700;
+            color: #00cec9;
+            margin-top: 4px;
+        }
+        .metric-sub {
+            font-size: 11px;
+            color: #d1d1d6;
+            margin-top: 2px;
+        }
+        .highlight-header {
+            font-size: 38px;
+            font-weight: 700;
+            background: linear-gradient(135deg, #0984e3, #6c5ce7);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            text-align: center;
+            margin-bottom: 5px;
+        }
+        .gesture-card {
+            background: rgba(108, 92, 231, 0.1);
+            border-radius: 12px;
+            padding: 20px;
+            border: 1px solid rgba(108, 92, 231, 0.3);
+            text-align: center;
+            margin-top: 15px;
+        }
+        .gesture-emoji {
+            font-size: 60px;
+            margin-bottom: 10px;
+        }
+        .gesture-title {
+            font-size: 24px;
+            font-weight: 700;
+            color: #a29bfe;
+        }
+    </style>
+""", unsafe_allow_html=True)
+# App Title & Header
+st.markdown("<h1 class='highlight-header'>Jetson Edge AI Gesture Identifier 🖐️⚡</h1>", unsafe_allow_html=True)
+st.markdown("<p style='text-align: center; color: #a0a0a5; font-size: 15px;'>Real-time Hand Gesture Recognition and Keypoint Landmark extraction optimized for the NVIDIA Jetson Orin Nano.</p>", unsafe_allow_html=True)
+# ==========================================
+# HARDWARE UTILITY FUNCTIONS
+# ==========================================
+def get_cpu_temp():
+    """Retrieves CPU temperature if available on Linux/Jetson."""
+    if sys.platform.startswith('linux'):
+        for i in range(5):
+            path = f"/sys/class/thermal/thermal_zone{i}/temp"
+            if os.path.exists(path):
+                try:
+                    with open(path, 'r') as f:
+                        temp = float(f.read().strip()) / 1000.0
+                        return f"{temp:.1f}°C"
+                except Exception:
+                    pass
+    return "N/A"
+# ==========================================
+# GESTURE GEOMETRIC CLASSIFIER
+# ==========================================
+def classify_gesture(lm, hand_label="Right"):
+    """Classifies hand gesture based on geometric layout of landmarks"""
+    # Finger states: True = Open, False = Closed
+    index_up = lm[8].y < lm[6].y
+    middle_up = lm[12].y < lm[10].y
+    ring_up = lm[16].y < lm[14].y
+    pinky_up = lm[20].y < lm[18].y
+    # Thumb logic: check if extended away horizontally from index base (5)
+    if hand_label == "Right":
+        thumb_up = lm[4].x > lm[3].x and lm[4].x > lm[2].x
+    else:
+        thumb_up = lm[4].x < lm[3].x and lm[4].x < lm[2].x
+    # 1. Fist: All closed
+    if not thumb_up and not index_up and not middle_up and not ring_up and not pinky_up:
+        return "Fist", "✊"
+    # 2. Open Palm: All open
+    if thumb_up and index_up and middle_up and ring_up and pinky_up:
+        return "Open Palm", "🖐️"
+    # 3. Peace Sign: Index and Middle open, Ring and Pinky closed
+    if index_up and middle_up and not ring_up and not pinky_up:
+        return "Peace Sign", "✌️"
+    # 4. Rock On (🤟): Thumb, Index, Pinky open, Middle and Ring closed
+    if thumb_up and index_up and pinky_up and not middle_up and not ring_up:
+        return "Rock On", "🤟"
+    # 5. Thumb Up: Only thumb open, others closed
+    if thumb_up and not index_up and not middle_up and not ring_up and not pinky_up:
+        return "Thumb Up", "👍"
+    # 6. OK Sign: Thumb and Index touching, others open
+    d_thumb_index = math.hypot(lm[4].x - lm[8].x, lm[4].y - lm[8].y)
+    if d_thumb_index < 0.06 and middle_up and ring_up and pinky_up:
+        return "OK Sign", "👌"
+    # 7. Pointer: Only index open
+    if index_up and not middle_up and not ring_up and not pinky_up:
+        return "Pointer", "☝️"
+    return "Unknown", "🤔"
+# ==========================================
+# SIDEBAR CONTROLS
+# ==========================================
+st.sidebar.markdown("<h3 style='color: #0984e3; margin-top: 0;'>Camera Options</h3>", unsafe_allow_html=True)
+camera_idx = st.sidebar.number_input("Logitech Webcam Index", min_value=0, max_value=5, value=0, step=1)
+mirror_view = st.sidebar.checkbox("Mirror Selfie View", value=True)
+st.sidebar.markdown("---")
+st.sidebar.markdown("<h3 style='color: #6c5ce7;'>Landmark Visualization</h3>", unsafe_allow_html=True)
+draw_connections = st.sidebar.checkbox("Draw Skeleton Connections", value=True)
+draw_bounding_box = st.sidebar.checkbox("Draw Hand Bounding Box", value=True)
+st.sidebar.markdown("---")
+st.sidebar.markdown("<h3 style='color: #fdcb6e;'>Model Settings</h3>", unsafe_allow_html=True)
+min_detection_confidence = st.sidebar.slider("Detection Confidence", min_value=0.5, max_value=1.0, value=0.85, step=0.05)
+min_tracking_confidence = st.sidebar.slider("Tracking Confidence", min_value=0.5, max_value=1.0, value=0.70, step=0.05)
+inference_skip = st.sidebar.slider("Inference Frame Interval", min_value=1, max_value=5, value=2, step=1, help="Run hand tracking every N frames to boost performance.")
+st.sidebar.markdown("---")
+st.sidebar.markdown("<h3 style='color: #a0a0a5;'>System Status</h3>", unsafe_allow_html=True)
+st.sidebar.text(f"OS Platform:   {sys.platform.upper()}")
+st.sidebar.text(f"Thermal Temp:  {get_cpu_temp()}")
+# ==========================================
+# LAZY INITIALIZATION OF MEDIAPIPE MODELS
+# ==========================================
+@st.cache_resource
+def load_hands_model(min_det, min_track):
+    mp_hands = mp.solutions.hands
+    return mp_hands.Hands(
+        static_image_mode=False,
+        max_num_hands=1,
+        min_detection_confidence=min_det,
+        min_tracking_confidence=min_track
+    )
+hands = load_hands_model(min_detection_confidence, min_tracking_confidence)
+mp_draw = mp.solutions.drawing_utils
+mp_hands_conn = mp.solutions.hands.HAND_CONNECTIONS
+# ==========================================
+# TABS SETUP
+# ==========================================
+tab_live, tab_tutorial = st.tabs(["📹 Live Gesture Scanner", "📖 Gesture Catalog & Guide"])
+# ==========================================
+# TAB 1: LIVE GESTURE SCANNER
+# ==========================================
+with tab_live:
+    run_stream = st.checkbox("▶️ Start Webcam & Classification Pipeline", value=False)
+    
+    # Grid Layout
+    col_feed, col_hud = st.columns([5, 3])
+    
+    with col_feed:
+        video_placeholder = st.empty()
+        
+    with col_hud:
+        st.markdown("### 📊 Classification HUD")
+        fps_placeholder = st.empty()
+        hand_placeholder = st.empty()
+        gesture_output_placeholder = st.empty()
+    WIDTH, HEIGHT = 640, 480
+    if run_stream:
+        # Check if camera index changed
+        if 'current_camera_idx' not in st.session_state:
+            st.session_state.current_camera_idx = camera_idx
+        if st.session_state.current_camera_idx != camera_idx or 'cam' not in st.session_state or st.session_state.cam is None:
+            if 'cam' in st.session_state and st.session_state.cam is not None:
+                st.session_state.cam.close()
+            st.session_state.cam = USBWebcamPipe(camera_idx=camera_idx, width=WIDTH, height=HEIGHT)
+            st.session_state.current_camera_idx = camera_idx
+        cam = st.session_state.cam
+        
+        # Timing trackers
+        fps_history = []
+        last_time = time.perf_counter()
+        
+        # Main run loop
+        while run_stream:
+            frame = cam.get_latest_frame()
+            if frame is None:
+                time.sleep(0.01)
+                continue
+            
+            # Mirror selfie view if enabled
+            if mirror_view:
+                frame = cv2.flip(frame, 1)
+            h, w = frame.shape[:2]
+            # Track frame count for skip-frame inference logic
+            if 'frame_counter' not in st.session_state:
+                st.session_state.frame_counter = 0
+            st.session_state.frame_counter += 1
+            if 'last_results' not in st.session_state:
+                st.session_state.last_results = None
+            # Process hand detection (downscaled to 320x240 and skipped based on slider configuration)
+            if st.session_state.frame_counter % inference_skip == 0 or st.session_state.last_results is None:
+                small_frame = cv2.resize(frame, (320, 240))
+                rgb_small_frame = cv2.cvtColor(small_frame, cv2.COLOR_BGR2RGB)
+                st.session_state.last_results = hands.process(rgb_small_frame)
+            results = st.session_state.last_results
+            active_gesture = "None"
+            active_emoji = "🤔"
+            active_hand = "No hand detected"
+            
+            if results.multi_hand_landmarks:
+                for idx, hand_landmarks in enumerate(results.multi_hand_landmarks):
+                    lm = hand_landmarks.landmark
+                    
+                    # Determine hand label (Left/Right)
+                    hand_label = "Right"
+                    if results.multi_handedness and idx < len(results.multi_handedness):
+                        hand_label = results.multi_handedness[idx].classification[0].label
+                    active_hand = f"{hand_label} Hand"
+                        
+                    # Classify active gesture
+                    active_gesture, active_emoji = classify_gesture(lm, hand_label)
+                    
+                    # Draw bounding box if enabled
+                    if draw_bounding_box:
+                        x_coordinates = [int(landmark.x * w) for landmark in lm]
+                        y_coordinates = [int(landmark.y * h) for landmark in lm]
+                        x_min, x_max = min(x_coordinates), max(x_coordinates)
+                        y_min, y_max = min(y_coordinates), max(y_coordinates)
+                        # Padding
+                        cv2.rectangle(frame, (x_min - 20, y_min - 20), (x_max + 20, y_max + 20), (108, 92, 231), 2)
+                    
+                    # Draw skeleton landmarks if enabled
+                    if draw_connections:
+                        mp_draw.draw_landmarks(frame, hand_landmarks, mp_draw.HAND_CONNECTIONS,
+                                               mp_draw.DrawingSpec(color=(108, 92, 231), thickness=2, circle_radius=3),
+                                               mp_draw.DrawingSpec(color=(0, 206, 201), thickness=2))
+                    
+                    # Draw gesture label next to the hand on video overlay
+                    x_wrist, y_wrist = int(lm[0].x * w), int(lm[0].y * h)
+                    cv2.putText(frame, f"{active_gesture} {active_emoji}", (x_wrist - 40, y_wrist + 40), 
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2, cv2.LINE_AA)
+            # Compress to JPEG before sending over WebSocket to eliminate network bottlenecks
+            _, jpeg_buffer = cv2.imencode('.jpg', frame, [int(cv2.IMWRITE_JPEG_QUALITY), 80])
+            video_placeholder.image(jpeg_buffer.tobytes(), use_container_width=True)
+            # Performance HUD metrics update
+            now = time.perf_counter()
+            fps = 1.0 / (now - last_time) if (now - last_time) > 0 else 0
+            last_time = now
+            fps_history.append(fps)
+            if len(fps_history) > 30:
+                fps_history.pop(0)
+            avg_fps = np.mean(fps_history)
+            fps_placeholder.markdown(f"""
+                <div class="metric-container">
+                    <div class="metric-label">Pipeline Frame Rate</div>
+                    <div class="metric-value">{avg_fps:.1f} FPS</div>
+                    <div class="metric-sub">MediaPipe + OpenCV Processing</div>
+                </div>
+            """, unsafe_allow_html=True)
+            
+            hand_placeholder.markdown(f"""
+                <div class="metric-container">
+                    <div class="metric-label">Tracked Hand</div>
+                    <div class="metric-value" style="color: #0984e3;">{active_hand}</div>
+                    <div class="metric-sub">MediaPipe multi-handedness index</div>
+                </div>
+            """, unsafe_allow_html=True)
+            gesture_output_placeholder.markdown(f"""
+                <div class="gesture-card">
+                    <div class="gesture-emoji">{active_emoji}</div>
+                    <div class="gesture-title">{active_gesture}</div>
+                    <div style="font-size: 12px; color: #a0a0a5; margin-top: 5px;">Active classified state</div>
+                </div>
+            """, unsafe_allow_html=True)
+            time.sleep(0.001)
+    else:
+        st.info("💡 Check the box above to start the gesture scanner webcam pipeline.")
+        # Cleanup camera thread on stop
+        if 'cam' in st.session_state and st.session_state.cam is not None:
+            st.session_state.cam.close()
+            st.session_state.cam = None
+# ==========================================
+# TAB 2: GESTURE CATALOG
+# ==========================================
+with tab_tutorial:
+    st.markdown("### 📖 Hand Gestures Library Catalog")
+    st.write("Below are the hand gestures that this classifier can identify:")
+    
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        st.markdown("""
+        #### ✊ Fist
+        * **Landmarks:** All 5 fingers closed.
+        * **Emoji:** `✊`
+        
+        #### 🖐️ Open Palm
+        * **Landmarks:** All 5 fingers open/extended.
+        * **Emoji:** `🖐️`
+        """)
+        
+    with col2:
+        st.markdown("""
+        #### ✌️ Peace Sign
+        * **Landmarks:** Index and Middle open, Ring and Pinky closed.
+        * **Emoji:** `✌️`
+        
+        #### 🤟 Rock On
+        * **Landmarks:** Thumb, Index, and Pinky open, others closed.
+        * **Emoji:** `🤟`
+        """)
+        
+    with col3:
+        st.markdown("""
+        #### 👍 Thumb Up
+        * **Landmarks:** Only thumb open, other fingers closed.
+        * **Emoji:** `👍`
+        
+        #### 👌 OK Sign
+        * **Landmarks:** Thumb tip and Index tip touching, others open.
+        * **Emoji:** `👌`
+        
+        #### ☝️ Pointer
+        * **Landmarks:** Only Index finger open, others closed.
+        * **Emoji:** `☝️`
+        """)
