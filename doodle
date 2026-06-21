@@ -130,6 +130,42 @@ def get_cpu_temp():
                 except Exception:
                     pass
     return "N/A"
+def classify_gesture(lm, hand_label="Right"):
+    """Classifies hand gesture based on geometric layout of landmarks"""
+    # Finger states: True = Open, False = Closed
+    # Tip coordinate compared to PIP joint coordinate
+    index_up = lm[8].y < lm[6].y
+    middle_up = lm[12].y < lm[10].y
+    ring_up = lm[16].y < lm[14].y
+    pinky_up = lm[20].y < lm[18].y
+    # Thumb logic: check if extended away horizontally from index base (5)
+    if hand_label == "Right":
+        thumb_up = lm[4].x > lm[3].x and lm[4].x > lm[2].x
+    else:
+        thumb_up = lm[4].x < lm[3].x and lm[4].x < lm[2].x
+    # 1. Fist: All closed
+    if not thumb_up and not index_up and not middle_up and not ring_up and not pinky_up:
+        return "Fist ✊"
+    # 2. Open Palm: All open
+    if thumb_up and index_up and middle_up and ring_up and pinky_up:
+        return "Open Palm 🖐️"
+    # 3. Peace Sign / Victory: Index and Middle open, Ring and Pinky closed
+    if index_up and middle_up and not ring_up and not pinky_up:
+        return "Peace Sign ✌️"
+    # 4. Rock On / Spiderman (🤟): Thumb, Index, Pinky open, Middle and Ring closed
+    if thumb_up and index_up and pinky_up and not middle_up and not ring_up:
+        return "Rock On 🤟"
+    # 5. Thumb Up: Only thumb open, others closed
+    if thumb_up and not index_up and not middle_up and not ring_up and not pinky_up:
+        return "Thumb Up 👍"
+    # 6. OK Sign: Thumb and Index touching, others open
+    d_thumb_index = math.hypot(lm[4].x - lm[8].x, lm[4].y - lm[8].y)
+    if d_thumb_index < 0.06 and middle_up and ring_up and pinky_up:
+        return "OK Sign 👌"
+    # 7. Pointer: Only index open
+    if index_up and not middle_up and not ring_up and not pinky_up:
+        return "Pointer ☝️"
+    return "Unknown Gesture 🤔"
 # ==========================================
 # INITIALIZE PERSISTENT STATE VARIABLES
 # ==========================================
@@ -220,9 +256,11 @@ with tab_canvas:
         
         st.markdown("#### Gestures Legend")
         st.info("""
-        * **1 Finger Up (Index):** Drawing Mode ✏️
-        * **2 Fingers Up (Index + Middle):** Selection Mode 🎯 *(Hover over top menu color to switch, hover over CLEAR to wipe)*
-        * **Closed Hand:** Paused Mode ⏸️
+        * **Pointer ☝️ (Index Up):** Drawing Mode ✏️
+        * **Peace Sign ✌️ (Index+Middle Up):** Color Selection Mode 🎯 *(Hover over top menu to switch, hover CLEAR to wipe)*
+        * **Fist ✊ (All Closed):** Eraser Mode 🧹 *(Wipes drawing under pointer)*
+        * **Rock On 🤟 (Spiderman):** Rainbow Glow Paint Mode 🌈 *(Cycles colors dynamically)*
+        * **Open Palm 🖐️ (All Open):** Paused Mode ⏸️
         """)
     # Setup or retrieve background capture thread
     if run_stream:
@@ -279,20 +317,30 @@ with tab_canvas:
             current_mode = "Paused ⏸️"
             
             if results.multi_hand_landmarks:
-                for hand_landmarks in results.multi_hand_landmarks:
+                for idx, hand_landmarks in enumerate(results.multi_hand_landmarks):
                     lm = hand_landmarks.landmark
+                    
+                    # Determine hand label
+                    hand_label = "Right"
+                    if results.multi_handedness and idx < len(results.multi_handedness):
+                        hand_label = results.multi_handedness[idx].classification[0].label
+                        
+                    # Classify active gesture
+                    gesture = classify_gesture(lm, hand_label)
                     
                     # Convert normalized coords to pixels
                     x1, y1 = int(lm[8].x * w), int(lm[8].y * h)   # Index fingertip
                     x2, y2 = int(lm[12].x * w), int(lm[12].y * h) # Middle fingertip
-                    # Gestures detection flags
-                    index_up = lm[8].y < lm[6].y
-                    middle_up = lm[12].y < lm[10].y
-                    ring_up = lm[16].y < lm[14].y
-                    # Mode 2: Color Selection Mode (Index + Middle fingers are raised)
-                    if index_up and middle_up and not ring_up:
+                    
+                    # Draw gesture label next to the hand on video overlay
+                    x_wrist, y_wrist = int(lm[0].x * w), int(lm[0].y * h)
+                    cv2.putText(frame, gesture, (x_wrist - 20, y_wrist + 30), cv2.FONT_HERSHEY_SIMPLEX, 0.75, (0, 255, 255), 2, cv2.LINE_AA)
+                    # --- GESTURE ACTION MAPPINGS ---
+                    
+                    # Action 1: Peace Sign = Color Selection Mode
+                    if gesture == "Peace Sign ✌️":
                         current_mode = "Selecting Color/Action 🎯"
-                        st.session_state.xp, st.session_state.yp = 0, 0 # Reset continuous lines
+                        st.session_state.xp, st.session_state.yp = 0, 0 # Reset drawing lines
                         
                         # Draw selection line/sight between fingertips
                         cv2.line(frame, (x1, y1), (x2, y2), COLORS[st.session_state.color_idx], 3)
@@ -307,8 +355,9 @@ with tab_canvas:
                                 st.session_state.xp, st.session_state.yp = 0, 0
                             else:
                                 st.session_state.color_idx = selected_box
-                    # Mode 1: Drawing Mode (Only Index finger is raised)
-                    elif index_up and not middle_up:
+                                
+                    # Action 2: Pointer = Standard Drawing Mode
+                    elif gesture == "Pointer ☝️":
                         current_mode = "Drawing ✏️"
                         
                         # Draw pointer indicator
@@ -327,8 +376,50 @@ with tab_canvas:
                                 brush_size
                             )
                         st.session_state.xp, st.session_state.yp = x1, y1
+                        
+                    # Action 3: Fist = Eraser Mode
+                    elif gesture == "Fist ✊":
+                        current_mode = "Eraser Mode 🧹"
+                        st.session_state.xp, st.session_state.yp = 0, 0
+                        
+                        # Draw eraser circle indicator on the video frame
+                        cv2.circle(frame, (x1, y1), brush_size * 4, (255, 255, 255), 2)
+                        cv2.putText(frame, "ERASER", (x1 - 25, y1 - 15), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2, cv2.LINE_AA)
+                        
+                        # Wipe/delete pixels on the persistent canvas (black color = transparent overlay)
+                        cv2.circle(st.session_state.canvas, (x1, y1), brush_size * 4, (0, 0, 0), -1)
+                        
+                    # Action 4: Rock On = Rainbow Glow Paint Mode
+                    elif gesture == "Rock On 🤟":
+                        current_mode = "Rainbow Paint Mode 🌈"
+                        
+                        # Update hue and convert HSL to BGR
+                        if 'hue' not in st.session_state:
+                            st.session_state.hue = 0.0
+                        st.session_state.hue = (st.session_state.hue + 4) % 360
+                        hsv_color = np.uint8([[[st.session_state.hue // 2, 255, 255]]]) # Hue is 0-179 in OpenCV
+                        bgr_color = cv2.cvtColor(hsv_color, cv2.COLOR_HSV2BGR)[0][0]
+                        rainbow_color = (int(bgr_color[0]), int(bgr_color[1]), int(bgr_color[2]))
+                        
+                        # Draw pointer indicator
+                        cv2.circle(frame, (x1, y1), brush_size + 4, rainbow_color, -1)
+                        cv2.circle(frame, (x1, y1), brush_size + 6, (255, 255, 255), 2)
+                        if st.session_state.xp == 0 and st.session_state.yp == 0:
+                            st.session_state.xp, st.session_state.yp = x1, y1
+                        # Draw continuous rainbow line
+                        dist = math.hypot(x1 - st.session_state.xp, y1 - st.session_state.yp)
+                        if dist < 100:
+                            cv2.line(
+                                st.session_state.canvas, 
+                                (st.session_state.xp, st.session_state.yp), 
+                                (x1, y1), 
+                                rainbow_color, 
+                                brush_size
+                            )
+                        st.session_state.xp, st.session_state.yp = x1, y1
+                        
                     else:
-                        # Closed hand or other gesture; break drawing line
+                        current_mode = f"Paused ({gesture}) ⏸️"
                         st.session_state.xp, st.session_state.yp = 0, 0
             else:
                 st.session_state.xp, st.session_state.yp = 0, 0
@@ -386,22 +477,18 @@ with tab_tutorial:
     col_draw_tut, col_select_tut = st.columns(2)
     
     with col_draw_tut:
-        st.markdown("#### ✏️ Drawing Gesture")
+        st.markdown("#### ☝️ Drawing & Paint Mode")
         st.write("""
-        1. Raise **only your Index finger** in front of the Logitech webcam.
-        2. Make sure your other fingers (especially the middle finger) are closed.
-        3. A colored circle indicator will hover on your index finger tip.
-        4. Move your hand to draw lines on the canvas.
+        * **Pointer Gesture (Index finger up, others closed):** Standard drawing mode. Move your index fingertip to draw lines on the canvas in the selected color.
+        * **Rock On Gesture (Thumb, Index, Pinky up, others closed 🤟):** Rainbow paint mode! Draw with a glowing, dynamically color-cycling rainbow brush.
         """)
         
     with col_select_tut:
-        st.markdown("#### 🎯 Color Selection / Clear Gesture")
+        st.markdown("#### ✌️ Tools & Actions Mode")
         st.write("""
-        1. Raise **both your Index and Middle fingers** (like a peace sign).
-        2. A line connector (laser sight) will draw between your two fingertips.
-        3. Move this sight up into the top bar menu.
-        4. Hover over any color box to switch brush colors.
-        5. Hover over the **CLEAR** box in the top-right to wipe the canvas clean.
+        * **Peace Sign Gesture (Index and Middle fingers up ✌️):** Hover your hand into the top header boxes to select standard brush colors or select the CLEAR option.
+        * **Fist Gesture (All fingers closed ✊):** Eraser mode! Move your closed hand over any part of the canvas to wipe out drawings.
+        * **Open Palm Gesture (All fingers extended 🖐️):** Pauses drawing.
         """)
 # ==========================================
 # TAB 3: DEBUGGER & METRICS
