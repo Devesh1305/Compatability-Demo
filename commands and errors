@@ -1,2 +1,1 @@
-File "/home/gitam/mnt/storage/demo/hands/hands.py", line 9, in <module>
-    import mediapipe as mp
+sudo apt-get install -y libgl1-mesa-glx libglib2.0-0
