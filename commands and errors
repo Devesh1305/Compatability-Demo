@@ -1,3 +1,4 @@
-pip install https://huggingface.co/limegreenpeper1/PrecompiledWheels/resolve/main/mediapipe-0.10.26-cp310-cp310-linux_aarch64.whl
-# 2. Run Streamlit using python3 -m
-python3 -m streamlit run hands.py --server.port 8502 --server.address 0.0.0.0
+(venv) gitam@Gitam-Nano:~/mnt/storage/demo/hands$ pip install https://huggingface.co/limegreenpeper1/PrecompiledWheels/resolve/main/mediapipe-0.10.26-cp310-cp310-linux_aarch64.whl
+Collecting mediapipe==0.10.26
+  ERROR: HTTP error 404 while getting https://huggingface.co/limegreenpeper1/PrecompiledWheels/resolve/main/mediapipe-0.10.26-cp310-cp310-linux_aarch64.whl
+ERROR: Could not install requirement mediapipe==0.10.26 from https://huggingface.co/limegreenpeper1/PrecompiledWheels/resolve/main/mediapipe-0.10.26-cp310-cp310-linux_aarch64.whl because of HTTP error 404 Client Error: Not Found for url: https://huggingface.co/limegreenpeper1/PrecompiledWheels/resolve/main/mediapipe-0.10.26-cp310-cp310-linux_aarch64.whl for URL https://huggingface.co/limegreenpeper1/PrecompiledWheels/resolve/main/mediapipe-0.10.26-cp310-cp310-linux_aarch64.whl
