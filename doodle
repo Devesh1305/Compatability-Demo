@@ -158,9 +158,10 @@ st.sidebar.markdown("**Manual Color Selection Override:**")
 manual_color_select = st.sidebar.selectbox("Active Drawing Color", COLOR_NAMES, index=st.session_state.color_idx)
 st.session_state.color_idx = COLOR_NAMES.index(manual_color_select)
 st.sidebar.markdown("---")
-st.sidebar.markdown("<h3 style='color: #fdcb6e;'>Model Thresholds</h3>", unsafe_allow_html=True)
+st.sidebar.markdown("<h3 style='color: #fdcb6e;'>Model Optimization</h3>", unsafe_allow_html=True)
 min_detection_confidence = st.sidebar.slider("MediaPipe Detection Conf", min_value=0.5, max_value=1.0, value=0.85, step=0.05)
 min_tracking_confidence = st.sidebar.slider("MediaPipe Tracking Conf", min_value=0.5, max_value=1.0, value=0.70, step=0.05)
+inference_skip = st.sidebar.slider("Inference Frame Interval", min_value=1, max_value=5, value=2, step=1, help="Run hand tracking every N frames. Higher values boost frame rate by skipping heavy CPU model sweeps.")
 st.sidebar.markdown("---")
 # Nuke Canvas action
 if st.sidebar.button("🧹 Clear Doodle Canvas"):
@@ -263,10 +264,18 @@ with tab_canvas:
                     # Border highlights active color
                     if i == st.session_state.color_idx:
                         cv2.rectangle(frame, (x_start, 0), (x_end, 50), (255, 255, 255), 4)
-            # Process hand detection (downscaled to 320x240 for 30+ FPS CPU execution on Jetson)
-            small_frame = cv2.resize(frame, (320, 240))
-            rgb_small_frame = cv2.cvtColor(small_frame, cv2.COLOR_BGR2RGB)
-            results = hands.process(rgb_small_frame)
+            # Track frame count for skip-frame inference logic
+            if 'frame_counter' not in st.session_state:
+                st.session_state.frame_counter = 0
+            st.session_state.frame_counter += 1
+            if 'last_results' not in st.session_state:
+                st.session_state.last_results = None
+            # Process hand detection (downscaled to 320x240 and skipped based on slider configuration)
+            if st.session_state.frame_counter % inference_skip == 0 or st.session_state.last_results is None:
+                small_frame = cv2.resize(frame, (320, 240))
+                rgb_small_frame = cv2.cvtColor(small_frame, cv2.COLOR_BGR2RGB)
+                st.session_state.last_results = hands.process(rgb_small_frame)
+            results = st.session_state.last_results
             current_mode = "Paused ⏸️"
             
             if results.multi_hand_landmarks:
@@ -326,8 +335,9 @@ with tab_canvas:
             # Merge persistent drawing canvas with current frame (black pixels are transparent)
             paint_mask = st.session_state.canvas.any(axis=-1)
             frame[paint_mask] = st.session_state.canvas[paint_mask]
-            # Render frame
-            video_placeholder.image(frame, channels="BGR", use_container_width=True)
+            # Compress to JPEG before sending over WebSocket to eliminate raw image network transfer bottlenecks
+            _, jpeg_buffer = cv2.imencode('.jpg', frame, [int(cv2.IMWRITE_JPEG_QUALITY), 80])
+            video_placeholder.image(jpeg_buffer.tobytes(), use_container_width=True)
             # Performance HUD metrics update
             now = time.perf_counter()
             fps = 1.0 / (now - last_time) if (now - last_time) > 0 else 0
@@ -360,7 +370,7 @@ with tab_canvas:
                     <div class="metric-sub">Brush Size: {brush_size} px</div>
                 </div>
             """, unsafe_allow_html=True)
-            time.sleep(0.01)
+            time.sleep(0.001)
     else:
         st.info("💡 Check the box above to start the webcam pipeline.")
         # Cleanup camera thread on stop
