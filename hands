@@ -1,5 +1,7 @@
-import os
 import sys
+# Prevent MediaPipe from attempting to load global TensorFlow which causes Protobuf conflicts
+sys.modules['tensorflow'] = None
+import os
 import time
 import math
 import random
