@@ -13,9 +13,16 @@ import mediapipe as mp
 class USBWebcamPipe:
     """Low-latency threaded camera fetcher for USB webcams on Jetson/PC"""
     def __init__(self, camera_idx=0, width=640, height=480):
-        self.cap = cv2.VideoCapture(camera_idx)
+        # Force V4L2 backend on Linux to allow hardware level MJPG decoding
+        if sys.platform.startswith('linux'):
+            self.cap = cv2.VideoCapture(camera_idx, cv2.CAP_V4L2)
+            self.cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'MJPG'))
+        else:
+            self.cap = cv2.VideoCapture(camera_idx)
+            
         self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
         self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
+        self.cap.set(cv2.CAP_PROP_FPS, 30)
         # Force a small buffer size to reduce frames lag
         self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
         
@@ -256,9 +263,10 @@ with tab_canvas:
                     # Border highlights active color
                     if i == st.session_state.color_idx:
                         cv2.rectangle(frame, (x_start, 0), (x_end, 50), (255, 255, 255), 4)
-            # Process hand detection
-            rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            results = hands.process(rgb_frame)
+            # Process hand detection (downscaled to 320x240 for 30+ FPS CPU execution on Jetson)
+            small_frame = cv2.resize(frame, (320, 240))
+            rgb_small_frame = cv2.cvtColor(small_frame, cv2.COLOR_BGR2RGB)
+            results = hands.process(rgb_small_frame)
             current_mode = "Paused ⏸️"
             
             if results.multi_hand_landmarks:
